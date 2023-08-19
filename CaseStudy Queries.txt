@@ -1,0 +1,136 @@
+***********All explained in the word file**************
+Q1:
+
+1)
+
+-- The Most and the least selling months?
+
+SELECT  DISTINCT TO_CHAR(TO_DATE(INVOICEDATE, 'MM/DD/YYYY HH24:MI'), 'Month') month, SUM(price) OVER(PARTITION BY TO_CHAR(TO_DATE(INVOICEDATE, 'MM/DD/YYYY HH24:MI'), 'Month')) total_month_sales
+FROM tableretail
+ORDER BY SUM(price) OVER(PARTITION BY TO_CHAR(TO_DATE(INVOICEDATE, 'MM/DD/YYYY HH24:MI'), 'Month')) DESC;
+
+2)
+
+-- What was their first and last purchase date?
+
+SELECT DISTINCT CUSTOMER_ID, FIRST_VALUE(TO_DATE(INVOICEDATE, 'MM/DD/YYYY HH24:MI') IGNORE NULLS) OVER(PARTITION BY CUSTOMER_ID ORDER BY TO_CHAR(TO_DATE(INVOICEDATE, 'MM/DD/YYYY HH24:MI')) ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS FIRST_PURCHASE,
+LAST_VALUE(TO_DATE(INVOICEDATE, 'MM/DD/YYYY HH24:MI') IGNORE NULLS) OVER(PARTITION BY CUSTOMER_ID ORDER BY TO_CHAR(TO_DATE(INVOICEDATE, 'MM/DD/YYYY HH24:MI')) ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS LAST_PURCHASE
+FROM tableretail;
+
+3)
+
+-- Total spent for each customer?
+
+SELECT DISTINCT CUSTOMER_ID, SUM(PRICE * QUANTITY) OVER (PARTITION BY CUSTOMER_ID) AS TOTAL_SPENT
+FROM tableretail
+ORDER BY SUM(PRICE * QUANTITY) OVER (PARTITION BY CUSTOMER_ID) DESC;
+
+4)
+
+-- Change in sales month over month?
+
+SELECT  TO_CHAR(TO_DATE(INVOICEDATE, 'MM/DD/YYYY HH24:MI'), 'fmMonth yyyy') Month, EXTRACT(MONTH FROM TO_DATE(INVOICEDATE, 'MM/DD/YYYY HH24:MI')) AS Month_number, SUM(price) total_sales,  LAG(SUM(price)) OVER(ORDER BY TO_CHAR(TO_DATE(INVOICEDATE, 'MM/DD/YYYY HH24:MI'), 'fmMonth yyyy')) AS last_month_sales,
+SUM(price) - LAG(SUM(price)) OVER(ORDER BY EXTRACT(MONTH FROM TO_DATE(INVOICEDATE, 'MM/DD/YYYY HH24:MI'))) AS change
+FROM tableretail
+GROUP BY TO_CHAR(TO_DATE(INVOICEDATE, 'MM/DD/YYYY HH24:MI'), 'fmMonth yyyy'), EXTRACT(MONTH FROM TO_DATE(INVOICEDATE, 'MM/DD/YYYY HH24:MI'))
+ORDER BY  EXTRACT(MONTH FROM TO_DATE(INVOICEDATE, 'MM/DD/YYYY HH24:MI')) DESC;
+
+5)
+
+-- Total sales of the highest 10% of customers?
+
+SELECT SUM(TOTAL_SALES)  total_sales_highest
+FROM (
+SELECT CUSTOMER_ID, SUM(QUANTITY * PRICE) AS TOTAL_SALES, PERCENT_RANK() OVER(ORDER BY SUM(price) DESC) AS its_a_rank
+FROM tableretail
+GROUP BY CUSTOMER_ID
+)  
+WHERE its_a_rank <= 0.1;
+
+======================================================================
+
+Q2: The Monetary Model
+
+
+WITH cte AS (
+  SELECT 
+    customer_id, 
+    recency, 
+    frequency, 
+    monetary, 
+    NTILE(5) OVER (ORDER BY recency) AS r_score,
+    NTILE(5) OVER (ORDER BY TRUNC((frequency + monetary)/2)) AS fm_score
+  FROM (
+    SELECT DISTINCT 
+  customer_id, 
+  last_value(to_date(InvoiceDate, 'mm-dd-yyyy HH24:MI') IGNORE NULLS) 
+    OVER(PARTITION BY customer_id ORDER BY to_date(InvoiceDate, 'mm-dd-yyyy HH24:MI') 
+    ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS last_purchase, 
+    ROUND( (SELECT MAX(to_date(InvoiceDate, 'mm-dd-yyyy HH24:MI')) FROM tableretail) - last_value(to_date(InvoiceDate, 'mm-dd-yyyy HH24:MI') IGNORE NULLS) OVER(PARTITION BY customer_id ORDER BY to_date(InvoiceDate, 'mm-dd-yyyy HH24:MI') ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING)) AS recency, 
+      COUNT(INVOICE) OVER(PARTITION BY CUSTOMER_ID) AS frequency,
+      SUM(PRICE*QUANTITY) OVER(PARTITION BY CUSTOMER_ID) AS monetary
+    FROM tableRetail 
+  )
+)
+SELECT customer_id, recency, frequency, monetary, NTILE(5) OVER (ORDER BY recency) AS r_score,
+NTILE(5) OVER (ORDER BY TRUNC((frequency + monetary)/2)) AS fm_score,
+CASE
+WHEN (r_score = 5 AND fm_score IN (4, 5)) OR
+(r_score = 4 AND fm_score = 5) THEN 'Champions'
+WHEN (r_score = 5 AND fm_score = 2) OR
+(r_score = 4 AND fm_score = 2) OR
+(r_score = 3 AND fm_score IN (3, 4)) THEN 'Potential Loyalists'
+WHEN (r_score = 5 AND fm_score = 3) OR
+(r_score = 4 AND fm_score = 4) OR
+(r_score = 3 AND fm_score = 5) THEN 'Loyal Customers'
+WHEN r_score = 5 AND fm_score = 1 THEN 'Recent Customers'
+WHEN r_score = 4 AND fm_score = 1 THEN 'Promising'
+WHEN (r_score = 3 AND fm_score = 2) OR
+(r_score = 2 AND fm_score = 3) OR
+(r_score = 2 AND fm_score = 2) THEN 'Customers Needing Attention'
+WHEN (r_score = 2 AND fm_score IN (4, 5)) OR
+(r_score = 1 AND fm_score = 3) THEN 'At Risk'
+WHEN (r_score = 1 AND fm_score IN (4, 5)) THEN 'Cant Lose Them'
+WHEN r_score = 1 AND fm_score = 2 THEN 'Hibernating'
+WHEN r_score = 1 AND fm_score = 1 THEN 'Lost'
+ELSE NULL
+END AS segment
+
+ FROM cte;
+
+=============================================================================================
+
+Q3: 
+
+a) What is the maximum number of consecutive days a customer made purchases?
+
+SELECT cust_id, MAX(consecutive_days) AS max_consecutive_days
+FROM (
+  SELECT cust_id, CALENDAR_DT,
+    SUM(CASE WHEN CALENDAR_DT = prev_purchase_date + 1 THEN 1 ELSE 0 END) OVER (PARTITION BY cust_id ORDER BY CALENDAR_DT) +1 AS consecutive_days
+FROM (
+    SELECT cust_id, CALENDAR_DT,
+      LAG(CALENDAR_DT) OVER (PARTITION BY cust_id ORDER BY CALENDAR_DT) AS prev_purchase_date
+    FROM transactions )
+) 
+GROUP BY cust_id
+ORDER BY MAX(consecutive_days) DESC;
+
+
+b) On average, How many days/transactions does it take a customer to reach a spent threshold of 250 L.E?
+
+
+SELECT AVG(num_transactions) as avg_transaction , AVG(num_days) avg_days
+FROM (
+  SELECT DISTINCT cust_id,
+    MIN(rn) OVER (PARTITION BY cust_id ORDER BY calendar_dt) AS num_transactions,
+    MIN(num_days) OVER (PARTITION BY cust_id ORDER BY calendar_dt) AS num_days
+  FROM (
+    SELECT transactions.*, 
+      SUM(amt_le) OVER (PARTITION BY cust_id ORDER BY calendar_dt) AS its_a_sum,
+      ROW_NUMBER() OVER (PARTITION BY cust_id ORDER BY calendar_dt) AS rn,
+      calendar_dt - MIN(calendar_dt) OVER (PARTITION BY cust_id ORDER BY calendar_dt) AS num_days
+    FROM transactions
+  ) 
+  WHERE its_a_sum >= 250
+) ;
